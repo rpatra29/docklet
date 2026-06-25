@@ -18,10 +18,18 @@ struct LiquidGlass: NSViewRepresentable {
 // Trimming this from 0→progressFraction traces the outline left-to-right.
 struct IslandProgressShape: Shape {
     var cornerRadius: CGFloat = 12
+    // Pull the path in by half the stroke width so the line sits flush *inside*
+    // the pill edge instead of straddling it (which makes it look detached on the
+    // short docked pill, where the bottom edge meets the menu-bar boundary).
+    var inset: CGFloat = 1
 
-    func path(in rect: CGRect) -> Path {
+    func path(in rect0: CGRect) -> Path {
+        // Inset the sides and bottom; leave the top open (the top edge isn't drawn).
+        let rect = CGRect(x: rect0.minX + inset, y: rect0.minY,
+                          width: max(0, rect0.width - inset * 2),
+                          height: max(0, rect0.height - inset))
         var p = Path()
-        let r = min(cornerRadius, rect.height / 2, rect.width / 2)
+        let r = max(0, min(cornerRadius - inset, rect.height / 2, rect.width / 2))
         p.move(to: CGPoint(x: rect.minX, y: rect.minY))
         p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - r))
         p.addArc(center: CGPoint(x: rect.minX + r, y: rect.maxY - r),

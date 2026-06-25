@@ -31,7 +31,7 @@ struct SettingsView: View {
         case .appearance: AppearanceSettings(state: state)
         case .tabs:       TabsSettings(state: state)
         case .weather:    WeatherSettings(state: state)
-        case .about:      AboutSettings()
+        case .about:      AboutSettings(state: state)
         }
     }
 }
@@ -199,6 +199,7 @@ private struct WeatherSettings: View {
 }
 
 private struct AboutSettings: View {
+    @ObservedObject var state: PillState
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
     }
@@ -219,6 +220,7 @@ private struct AboutSettings: View {
                 .padding(.vertical, 4)
             }
             Section {
+                Button("Restore Defaults") { state.resetToDefaults() }
                 Button("Quit Docklet", role: .destructive) { NSApp.terminate(nil) }
             }
         }

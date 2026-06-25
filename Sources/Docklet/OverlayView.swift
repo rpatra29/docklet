@@ -441,7 +441,14 @@ struct NotchView: View {
                         .frame(width: geo.size.width * progressFraction, height: 3)
                         .animation(.linear(duration: 0.5), value: np.displayElapsed)
                 }
-            }.frame(height: 3)
+                .frame(height: 14)                 // taller invisible hit area
+                .contentShape(Rectangle())
+                // Click or drag anywhere on the bar to scrub.
+                .gesture(DragGesture(minimumDistance: 0).onEnded { v in
+                    let f = min(max(0, v.location.x / max(geo.size.width, 1)), 1)
+                    np.seek(to: f * np.track.duration)
+                })
+            }.frame(height: 14)
             HStack {
                 Text(fmt(np.displayElapsed)).font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.4))
                 Spacer()

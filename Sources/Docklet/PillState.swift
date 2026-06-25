@@ -143,6 +143,21 @@ class PillState: ObservableObject {
 
     func isTabEnabled(_ t: Tab) -> Bool { enabledTabs.contains(t.rawValue) }
 
+    /// Restore every persisted setting to its shipped default.
+    func resetToDefaults() {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            glowEnabled    = true
+            useFahrenheit  = false
+            enlargeOnHover = true
+            expandOnHover  = false
+            accentMode     = .albumArt
+            customAccentHex = "#3A86FF"
+            idleContent    = .weather
+            enabledTabs    = Set(Tab.allCases.map(\.rawValue))
+            defaultTab     = .music
+        }
+    }
+
     func setTab(_ t: Tab, enabled: Bool) {
         if enabled { enabledTabs.insert(t.rawValue) }
         else if enabledTabs.count > 1 { enabledTabs.remove(t.rawValue) }

@@ -176,6 +176,20 @@ final class NowPlayingMonitor: ObservableObject {
     func next()            { command("next track") }
     func prev()            { command("previous track") }
 
+    /// Scrub to an absolute position (seconds). Both Music and Spotify expose
+    /// `player position` in seconds, so the same command works for either.
+    func seek(to seconds: Double) {
+        guard track.duration > 0 else { return }
+        let target = min(max(0, seconds), track.duration)
+        // Optimistically update the UI so the bar tracks the cursor immediately.
+        elapsedBase = target
+        elapsedBaseTime = Date()
+        displayElapsed = target
+        runScript("tell application \"\(source)\" to set player position to \(target)") { [weak self] _, _ in
+            Task { @MainActor in self?.poll() }
+        }
+    }
+
     private func command(_ cmd: String) {
         runScript("tell application \"\(source)\" to \(cmd)") { [weak self] _, _ in
             Task { @MainActor in self?.poll() }

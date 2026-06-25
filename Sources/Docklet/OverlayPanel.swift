@@ -116,11 +116,12 @@ class OverlayPanel: NSPanel {
             topInset   = lArea.height
             let sideExtra: CGFloat = 62
             let cW = notchWidth + sideExtra * 2
-            let cH = lArea.height
+            let cH = lArea.height * 1.03             // 3% taller than the notch strip
             let cx = (lArea.maxX + rArea.minX) / 2   // notch centre
             let eH = topInset + 34 + 24 + 188          // notch strip + navbar + gap + tab content
 
-            compactRect = NSRect(x: cx - cW / 2, y: lArea.minY, width: cW, height: cH)
+            // Top edge pinned to the bezel; the extra height grows straight down.
+            compactRect = NSRect(x: cx - cW / 2, y: lArea.maxY - cH, width: cW, height: cH)
             hoverRect = inflatedCompact(compactRect, dw: 20, dh: 6)
             // Top edge stays pinned to the bezel — the card grows straight DOWN, no shift, no gap above.
             expandedRect = NSRect(x: cx - eW / 2, y: compactRect.maxY - eH, width: eW, height: eH)
@@ -130,7 +131,7 @@ class OverlayPanel: NSPanel {
             notchWidth = 0
             topInset   = menuBarH
             let cW: CGFloat = 120
-            let cH = menuBarH
+            let cH = menuBarH * 1.03                 // 3% taller than the menu bar
             let cx = screen.frame.midX
             let eH = topInset + 164
 

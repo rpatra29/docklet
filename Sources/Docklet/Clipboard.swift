@@ -8,6 +8,7 @@ struct ClipItem: Identifiable {
     let text: String?
     let image: NSImage?
     let date: Date
+    var pinned: Bool = false
 }
 
 // MARK: - Monitor
@@ -18,6 +19,10 @@ final class ClipboardMonitor: ObservableObject {
 
     @Published var items: [ClipItem] = []
 
+    /// Pinned items first (newest-first within each group), so pins stay at the top.
+    var ordered: [ClipItem] { items.filter(\.pinned) + items.filter { !$0.pinned } }
+
+    private let maxItems = 20
     private var lastChangeCount: Int
     private var timer: Timer?
 
@@ -47,7 +52,15 @@ final class ClipboardMonitor: ObservableObject {
 
     private func insert(_ item: ClipItem) {
         items.insert(item, at: 0)
-        if items.count > 20 { items.removeLast() }
+        trim()
+    }
+
+    // Drop the oldest *unpinned* item once over the cap — pinned items never rotate out.
+    private func trim() {
+        guard items.count > maxItems else { return }
+        if let idx = items.lastIndex(where: { !$0.pinned }) {
+            items.remove(at: idx)
+        }
     }
 
     func copy(_ item: ClipItem) {
@@ -58,8 +71,14 @@ final class ClipboardMonitor: ObservableObject {
         lastChangeCount = pb.changeCount   // don't re-capture our own copy
     }
 
+    func togglePin(id: UUID) {
+        guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
+        items[idx].pinned.toggle()
+    }
+
     func remove(id: UUID) { items.removeAll { $0.id == id } }
-    func clear()          { items.removeAll() }
+    // Clear only unpinned items — pins are intentionally kept.
+    func clear()          { items.removeAll { !$0.pinned } }
 }
 
 // MARK: - View
@@ -92,9 +111,10 @@ struct ClipboardView: View {
 
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 3) {
-                        ForEach(monitor.items) { item in
+                        ForEach(monitor.ordered) { item in
                             ClipItemRow(item: item,
                                 onCopy:   { monitor.copy(item) },
+                                onPin:    { monitor.togglePin(id: item.id) },
                                 onRemove: { monitor.remove(id: item.id) })
                         }
                     }
@@ -109,6 +129,7 @@ struct ClipboardView: View {
 struct ClipItemRow: View {
     let item: ClipItem
     let onCopy: () -> Void
+    let onPin: () -> Void
     let onRemove: () -> Void
     @State private var hover = false
     @State private var flashCheck = false
@@ -126,6 +147,12 @@ struct ClipItemRow: View {
                     .lineLimit(2).truncationMode(.tail)
             }
             Spacer(minLength: 4)
+            // A persistent pin glyph marks pinned rows even when not hovered.
+            if item.pinned && !hover {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 9)).foregroundColor(.white.opacity(0.4))
+                    .rotationEffect(.degrees(45))
+            }
             if hover {
                 Group {
                     if flashCheck {
@@ -142,6 +169,13 @@ struct ClipItemRow: View {
                         }.buttonStyle(.plain)
                     }
                 }
+                Button(action: onPin) {
+                    Image(systemName: item.pinned ? "pin.fill" : "pin")
+                        .font(.system(size: 10))
+                        .foregroundColor(item.pinned ? .yellow.opacity(0.85) : .white.opacity(0.45))
+                        .rotationEffect(.degrees(45))
+                }.buttonStyle(.plain)
+                    .help(item.pinned ? "Unpin" : "Pin — keep across history")
                 Button(action: onRemove) {
                     Image(systemName: "xmark").font(.system(size: 9, weight: .medium))
                         .foregroundColor(.white.opacity(0.35))
@@ -149,12 +183,13 @@ struct ClipItemRow: View {
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(hover ? 0.1 : 0.04)))
-        .onHover { hover = $0 }
+        .background(RoundedRectangle(cornerRadius: 7)
+            .fill(Color.white.opacity(item.pinned ? (hover ? 0.12 : 0.07) : (hover ? 0.1 : 0.04))))
         .onTapGesture {
             onCopy()
             flashCheck = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { flashCheck = false }
         }
+        .onHover { hover = $0 }
     }
 }

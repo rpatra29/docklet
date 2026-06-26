@@ -23,6 +23,8 @@ final class ShelfStore: ObservableObject {
         guard url.isFileURL, !items.contains(url) else { return }
         items.append(url)
         persist()
+        // Ambient, sound-free confirmation on the pill (shows when collapsed).
+        PillState.shared?.flash(icon: "tray.and.arrow.down.fill", text: "Saved to Shelf")
     }
     func remove(_ url: URL) { items.removeAll { $0 == url }; persist() }
     func clear() { items.removeAll(); persist() }

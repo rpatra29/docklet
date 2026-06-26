@@ -6,6 +6,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var state = PillState()
     private var settings: SettingsWindowController?
+    private var onboarding: OnboardingWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         panel = OverlayPanel(sharedState: state)
@@ -13,6 +14,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         settings = SettingsWindowController(state: state)
         setupStatusItem()
         WeatherMonitor.shared.refresh()
+
+        if Onboarding.needsOnboarding {
+            onboarding = OnboardingWindowController()
+            onboarding?.show()
+        }
     }
 
     private func setupStatusItem() {

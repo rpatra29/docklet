@@ -1,13 +1,82 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+
+// File types a Finder drag may advertise. Register for all of them so
+// `draggingEntered` actually fires regardless of which Finder exposes.
+let dropTypes: [NSPasteboard.PasteboardType] = [
+    .fileURL,
+    NSPasteboard.PasteboardType("public.file-url"),
+    NSPasteboard.PasteboardType("NSFilenamesPboardType")
+]
+
+// Pulls file URLs out of a drag, tolerating both modern and legacy encodings.
+func droppedFileURLs(_ sender: NSDraggingInfo) -> [URL] {
+    let opts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+    if let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: opts) as? [URL],
+       !urls.isEmpty {
+        return urls
+    }
+    if let paths = sender.draggingPasteboard.propertyList(forType:
+        NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] {
+        return paths.map { URL(fileURLWithPath: $0) }
+    }
+    return []
+}
+
+// Shared drag-destination callbacks, mixed into both the tracker and the hosting view
+// (whichever AppKit picks as the destination, the behaviour is identical).
+final class DragCallbacks {
+    var onDragEntered: (() -> Void)?
+    var onDragExited:  (() -> Void)?
+    var onFilesDropped: (([URL]) -> Void)?
+}
 
 class MouseTrackingView: NSView {
     var onMouseDown: (() -> Void)?
+    let drag = DragCallbacks()
 
     override func mouseDown(with event: NSEvent) { onMouseDown?() }
 
     // Accept the click without activating the app
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        drag.onDragEntered?(); return .copy
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) { drag.onDragExited?() }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = droppedFileURLs(sender)
+        guard !urls.isEmpty else { return false }
+        drag.onFilesDropped?(urls); return true
+    }
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) { drag.onDragExited?() }
+}
+
+// Lets SwiftUI controls (e.g. the compact pill's play/skip buttons) register on the
+// very first click even though the collapsed panel never becomes key. Also the frontmost
+// view, so it's the one AppKit hands file drags to — handled here, not via SwiftUI .onDrop,
+// so the collapsed pill is a reliable drop target and we control focus (expanding for a drag
+// must NOT steal key focus, which would cancel the in-flight cross-app drag session).
+final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    let drag = DragCallbacks()
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    @MainActor required init(rootView: Content) { super.init(rootView: rootView) }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        drag.onDragEntered?(); return .copy
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) { drag.onDragExited?() }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = droppedFileURLs(sender)
+        guard !urls.isEmpty else { return false }
+        drag.onFilesDropped?(urls); return true
+    }
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) { drag.onDragExited?() }
 }
 
 // One single panel = the whole notch widget. Click it → the whole thing expands.
@@ -33,10 +102,13 @@ class OverlayPanel: NSPanel {
         )
 
         isReleasedWhenClosed        = false
-        // Float above *all* ordinary app windows (and the menu bar). We deliberately
-        // do NOT join fullscreen spaces — instead we hide while a fullscreen app is
-        // front (see updateFullscreenVisibility), so the island never covers fullscreen video.
-        level                       = .screenSaver
+        // Float above ordinary app windows and the menu bar, but stay BELOW the
+        // screen-saver/shielding levels — windows that high don't receive drag-and-drop
+        // events, which broke file drops onto the pill. `.statusBar` (just above the menu
+        // bar) keeps the island on top of everything that matters while accepting drops.
+        // We don't join fullscreen spaces — we hide while a fullscreen app is front
+        // (see updateFullscreenVisibility) so the island never covers fullscreen video.
+        level                       = .statusBar
         backgroundColor             = .clear
         isOpaque                    = false
         hasShadow                   = false
@@ -55,7 +127,7 @@ class OverlayPanel: NSPanel {
         tracker.layer?.backgroundColor = CGColor.clear
         tracker.onMouseDown = { [weak self] in self?.toggleExpanded() }
 
-        let hosting = NSHostingView(rootView:
+        let hosting = FirstMouseHostingView(rootView:
             AnyView(NotchView(notchWidth: notchWidth, topInset: topInset).environmentObject(state))
         )
         hosting.frame = tracker.bounds
@@ -65,6 +137,24 @@ class OverlayPanel: NSPanel {
 
         tracker.addSubview(hosting)
         contentView = tracker
+
+        // File drops: expand to the shelf on enter, accept files on drop. Wire both the
+        // frontmost hosting view (the usual destination) and the tracker beneath it as a
+        // backstop, so the collapsed pill reliably accepts drags.
+        let onEnter:  () -> Void        = { [weak self] in self?.beginShelfDrag() }
+        let onExit:   () -> Void        = { [weak self] in self?.state.isDragTargeted = false }
+        let onDropped: ([URL]) -> Void  = { urls in
+            Task { @MainActor in urls.forEach { ShelfStore.shared.add($0) } }
+        }
+        for v in [tracker as NSView, hosting] {
+            v.registerForDraggedTypes(dropTypes)
+        }
+        tracker.drag.onDragEntered = onEnter
+        tracker.drag.onDragExited  = onExit
+        tracker.drag.onFilesDropped = onDropped
+        hosting.drag.onDragEntered = onEnter
+        hosting.drag.onDragExited  = onExit
+        hosting.drag.onFilesDropped = onDropped
 
         // Collapse when the user clicks anywhere outside the widget
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
@@ -116,7 +206,7 @@ class OverlayPanel: NSPanel {
             topInset   = lArea.height
             let sideExtra: CGFloat = 62
             let cW = notchWidth + sideExtra * 2
-            let cH = lArea.height * 1.03             // 3% taller than the notch strip
+            let cH = lArea.height * 1.092            // ~9% taller than the notch strip (3% + 6%)
             let cx = (lArea.maxX + rArea.minX) / 2   // notch centre
             let eH = topInset + 34 + 24 + 188          // notch strip + navbar + gap + tab content
 
@@ -131,7 +221,7 @@ class OverlayPanel: NSPanel {
             notchWidth = 0
             topInset   = menuBarH
             let cW: CGFloat = 120
-            let cH = menuBarH * 1.03                 // 3% taller than the menu bar
+            let cH = menuBarH * 1.092                // ~9% taller than the menu bar (3% + 6%)
             let cx = screen.frame.midX
             let eH = topInset + 164
 
@@ -150,6 +240,21 @@ class OverlayPanel: NSPanel {
     }
 
     // MARK: Expand / collapse — the whole widget morphs as one
+
+    // Expand straight to the shelf for an incoming file drag. Deliberately does NOT
+    // call makeKey() — taking key focus mid-drag cancels the cross-app drag session,
+    // which is what made drops fail before.
+    func beginShelfDrag() {
+        state.isDragTargeted = true
+        state.tab = .shelf
+        guard !state.isExpanded else { return }
+        state.isExpanded = true
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.4
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            self.animator().setFrame(self.expandedRect, display: true)
+        }
+    }
 
     func toggleExpanded() { setExpanded(!state.isExpanded) }
 

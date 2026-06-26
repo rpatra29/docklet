@@ -63,8 +63,22 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
 private struct GeneralSettings: View {
     @ObservedObject var state: PillState
+    // Mirrors SMAppService state; the toggle is the source of truth for the user.
+    @State private var launchAtLogin = LoginItem.isEnabled
     var body: some View {
         Form {
+            Section {
+                Toggle(isOn: Binding(
+                    get: { launchAtLogin },
+                    set: { LoginItem.set($0); launchAtLogin = LoginItem.isEnabled }
+                )) {
+                    Text("Launch at login")
+                    Text("Start Docklet automatically when you log in.")
+                }
+            } header: {
+                Text("Startup")
+            }
+
             Section {
                 Picker("Open to", selection: $state.defaultTab) {
                     ForEach(state.visibleTabs) { tab in
@@ -109,6 +123,7 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { launchAtLogin = LoginItem.isEnabled }
     }
 }
 

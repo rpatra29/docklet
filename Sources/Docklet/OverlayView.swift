@@ -72,7 +72,6 @@ struct NotchView: View {
     @EnvironmentObject var state: PillState
     @StateObject private var np = NowPlayingMonitor()
     @StateObject private var sysmon = SystemMonitor()
-    @StateObject private var calmon = CalendarMonitor.shared
     @StateObject private var weather = WeatherMonitor.shared
 
     // Width of the physical notch to leave pure-black in the compact middle (0 on non-notch Macs)
@@ -81,7 +80,6 @@ struct NotchView: View {
     let topInset: CGFloat
 
     @State private var isHovered = false
-    @State private var isDragTargeted = false   // local — more reliable than projecting @EnvironmentObject
     @State private var shuffleOn = false
     @State private var favOn = false
     @State private var eq: [CGFloat] = [5, 9, 6, 10, 7]
@@ -124,27 +122,17 @@ struct NotchView: View {
                     .animation(.linear(duration: 0.5), value: np.displayElapsed)
             }
         }
-        // Drag any file over the pill → auto-expand to shelf then accept the drop
-        .onDrop(of: [.fileURL], isTargeted: $isDragTargeted) { providers in
-            if !state.isExpanded {
-                state.tab = .shelf
-                state.onExpandRequest?(true)
-            }
-            for p in providers {
-                _ = p.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url else { return }
-                    Task { @MainActor in ShelfStore.shared.add(url) }
-                }
-            }
-            return true
-        }
-        .onChange(of: isDragTargeted) { targeted in
-            state.isDragTargeted = targeted
-            if targeted && !state.isExpanded {
-                state.tab = .shelf
-                state.onExpandRequest?(true)
+        // Soft outline pulse while a notification toast is showing on the compact pill.
+        .overlay {
+            if state.toast != nil && !state.isExpanded {
+                notchShape(isExpanded: false)
+                    .stroke(accent == .clear ? Color.white.opacity(0.5) : accent.opacity(0.7),
+                            lineWidth: 1.5)
+                    .transition(.opacity)
             }
         }
+        // File drag-and-drop is handled at the AppKit layer (OverlayPanel's content view)
+        // so it works reliably even while collapsed — see MouseTrackingView's drag methods.
         // Subtle grow on hover in compact mode — the whole pill enlarges by
         // animating the actual window frame (see OverlayPanel.setHovered), so the
         // growth isn't clipped at the window edges the way a scaleEffect would be.
@@ -210,53 +198,124 @@ struct NotchView: View {
         GeometryReader { geo in
             let sideW = max(0, (geo.size.width - notchWidth) / 2)
             let barH = geo.size.height
-            let artSide = max(0, barH - 8)   // small square thumbnail, capped to the bar height
+            // Thumbnail sits comfortably inside the pill with even margins, rather than
+            // filling the full height (which made it look oversized/cramped).
+            let artSide = max(0, barH * 0.62)
             let noMusic = np.track.title.isEmpty
-            HStack(spacing: 0) {
-                // Left of notch: album art when playing, idle glyph when idle
-                Group {
-                    if noMusic {
-                        idleLeft.padding(.trailing, 6)
-                    } else if let img = np.track.artwork {
-                        Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
-                            .frame(width: artSide, height: artSide)
-                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                            .padding(.trailing, 6)
-                    } else {
-                        ZStack {
-                            Color.white.opacity(0.08)
-                            Image(systemName: "music.note")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.white.opacity(0.4))
-                        }
-                        .frame(width: artSide, height: artSide)
-                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                        .padding(.trailing, 6)
-                    }
-                }
-                .frame(width: sideW, alignment: .trailing)
+            // Inline transport appears on hover while music is loaded — no need to expand.
+            let showControls = isHovered && !noMusic
 
-                // Behind the physical notch: stays pure black
-                Color.black.frame(width: notchWidth)
-
-                // Right of notch: idle value when idle, waveform when playing
-                Group {
-                    if noMusic {
-                        idleRight.padding(.leading, 6)
-                    } else {
-                        HStack(alignment: .center, spacing: 2.5) {
-                            ForEach(Array(eq.enumerated()), id: \.offset) { _, h in
-                                Capsule()
-                                    .fill(np.track.isPlaying ? Color.white.opacity(0.75) : Color.white.opacity(0.28))
-                                    .frame(width: 2.5, height: h)
-                                    .animation(.easeInOut(duration: 0.14), value: h)
+            if let toast = state.toast {
+                toastBar(toast, sideW: sideW)
+            } else {
+                HStack(spacing: 0) {
+                    // Left of notch: album art (with hover play/pause) when playing, idle glyph when idle
+                    Group {
+                        if noMusic {
+                            idleLeft.padding(.trailing, 6)
+                        } else {
+                            ZStack {
+                                artworkThumb(side: artSide)
+                                if showControls {
+                                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                        .fill(Color.black.opacity(0.5))
+                                        .frame(width: artSide, height: artSide)
+                                    compactCtrl(np.track.isPlaying ? "pause.fill" : "play.fill", 11) {
+                                        np.togglePlayPause()
+                                    }
+                                }
                             }
+                            .padding(.trailing, 6)
                         }
                     }
+                    .frame(width: sideW, alignment: .trailing)
+
+                    // Behind the physical notch: stays pure black
+                    Color.black.frame(width: notchWidth)
+
+                    // Right of notch: prev/next on hover, waveform while playing, idle value otherwise
+                    Group {
+                        if noMusic {
+                            idleRight.padding(.leading, 6)
+                        } else if showControls {
+                            HStack(spacing: 1) {
+                                compactCtrl("backward.fill", 10) { np.prev() }
+                                compactCtrl("forward.fill", 10) { np.next() }
+                            }
+                            .padding(.leading, 2)
+                        } else {
+                            HStack(alignment: .center, spacing: 2.5) {
+                                ForEach(Array(eq.enumerated()), id: \.offset) { _, h in
+                                    Capsule()
+                                        .fill(np.track.isPlaying ? Color.white.opacity(0.75) : Color.white.opacity(0.28))
+                                        .frame(width: 2.5, height: h)
+                                        .animation(.easeInOut(duration: 0.14), value: h)
+                                }
+                            }
+                            .padding(.leading, 6)
+                        }
+                    }
+                    .frame(width: sideW, alignment: .leading)
                 }
-                .frame(width: sideW, alignment: .leading)
             }
         }
+    }
+
+    // Album art thumbnail, falling back to a music-note placeholder.
+    @ViewBuilder func artworkThumb(side: CGFloat) -> some View {
+        if let img = np.track.artwork {
+            Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+                .frame(width: side, height: side)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        } else {
+            ZStack {
+                Color.white.opacity(0.08)
+                Image(systemName: "music.note")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+            .frame(width: side, height: side)
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        }
+    }
+
+    // A small transport button sized for the compact pill.
+    func compactCtrl(_ icon: String, _ size: CGFloat, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: size, weight: .heavy))
+                .foregroundColor(.white.opacity(0.92))
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // Transient notification laid out like the compact bar: icon left of the notch, text right.
+    func toastBar(_ toast: PillState.Toast, sideW: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                Image(systemName: toast.icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(accent == .clear ? .white : accent)
+            }
+            .frame(width: sideW, alignment: .trailing)
+            .padding(.trailing, 6)
+
+            Color.black.frame(width: notchWidth)
+
+            HStack(spacing: 0) {
+                Text(toast.text)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .frame(width: sideW, alignment: .leading)
+            .padding(.leading, 6)
+        }
+        .transition(.opacity)
     }
 
     // MARK: Compact idle content (weather / clock / battery / nothing)
@@ -346,9 +405,6 @@ struct NotchView: View {
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 case .clipboard:
                     ClipboardView()
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
-                case .calendar:
-                    CalendarView()
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }

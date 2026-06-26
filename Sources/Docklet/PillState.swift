@@ -3,7 +3,7 @@ import SwiftUI
 @MainActor
 class PillState: ObservableObject {
     enum Tab: String, CaseIterable, Identifiable {
-        case music, shelf, weather, capture, clipboard, calendar
+        case music, shelf, weather, capture, clipboard
         var id: String { rawValue }
         var icon: String {
             switch self {
@@ -12,7 +12,6 @@ class PillState: ObservableObject {
             case .weather:   return "cloud.sun.fill"
             case .capture:   return "mic.fill"
             case .clipboard: return "doc.on.clipboard"
-            case .calendar:  return "calendar"
             }
         }
         var title: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
@@ -46,9 +45,35 @@ class PillState: ObservableObject {
         }
     }
 
+    /// Set on init so non-UI singletons (e.g. ShelfStore) can flash the pill.
+    static weak var shared: PillState?
+
     @Published var isExpanded = false
     @Published var tab: Tab = .music
     @Published var isDragTargeted = false
+
+    // MARK: Transient pill notification ("toast")
+
+    struct Toast: Equatable {
+        let icon: String
+        let text: String
+        // Distinguishes successive toasts with identical content so the view re-triggers.
+        let stamp: Date = Date()
+    }
+    @Published var toast: Toast? = nil
+    private var toastDismiss: DispatchWorkItem?
+
+    /// Briefly flash the compact pill with an icon + short label, then auto-clear.
+    /// Renders only while collapsed (see NotchView) — an ambient, sound-free notification.
+    func flash(icon: String, text: String) {
+        toastDismiss?.cancel()
+        withAnimation(.easeOut(duration: 0.2)) { toast = Toast(icon: icon, text: text) }
+        let work = DispatchWorkItem { [weak self] in
+            withAnimation(.easeIn(duration: 0.25)) { self?.toast = nil }
+        }
+        toastDismiss = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.9, execute: work)
+    }
 
     // MARK: Persisted user settings
 
@@ -108,6 +133,7 @@ class PillState: ObservableObject {
         let saved = (d.array(forKey: "enabledTabs") as? [String]).map(Set.init)
         enabledTabs = saved?.isEmpty == false ? saved! : Set(Tab.allCases.map(\.rawValue))
         tab = enabledTabs.contains(savedTab.rawValue) ? savedTab : (Tab.allCases.first { enabledTabs.contains($0.rawValue) } ?? .music)
+        PillState.shared = self
     }
 
     // MARK: Derived

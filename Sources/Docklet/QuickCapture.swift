@@ -54,8 +54,12 @@ final class CaptureMonitor: NSObject, ObservableObject {
         isRecording = false
         let url = rec.url
         recorder = nil
-        // Auto-add to shelf
-        Task { @MainActor in ShelfStore.shared.add(url) }
+        // Auto-add to shelf, then collapse so the confirmation flash is visible on the pill.
+        Task { @MainActor in
+            ShelfStore.shared.add(url)
+            PillState.shared?.onExpandRequest?(false)
+            PillState.shared?.flash(icon: "waveform", text: "Voice note saved")
+        }
     }
 }
 

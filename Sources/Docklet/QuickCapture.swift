@@ -5,29 +5,57 @@ import AVFoundation
 
 @MainActor
 final class CaptureMonitor: NSObject, ObservableObject {
+    static let shared = CaptureMonitor()
+
     @Published var isRecording = false
     @Published var duration: Double = 0
     @Published var permissionDenied = false
 
     private var recorder: AVAudioRecorder?
     private var ticker: Timer?
+    private var isStarting = false
 
     func toggle() {
-        isRecording ? stop() : requestAndStart()
+        if isRecording { stop() }
+        else if !isStarting { requestAndStart() }
+    }
+
+    func finishRecordingIfNeeded() {
+        if isRecording { stop() }
     }
 
     private func requestAndStart() {
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if granted { self.start() } else { self.permissionDenied = true }
+        isStarting = true
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            permissionDenied = false
+            start()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.isStarting = false
+                    self.permissionDenied = !granted
+                    if granted { self.start() }
+                }
             }
+        default:
+            isStarting = false
+            permissionDenied = true
         }
     }
 
     private func start() {
-        let dir = FileManager.default.temporaryDirectory
-        let name = "capture-\(Int(Date().timeIntervalSince1970)).m4a"
+        isStarting = false
+        let fm = FileManager.default
+        guard let dir = ShelfStore.capturesDirectory else { return }
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            NSLog("Docklet: couldn't create capture directory — \(error.localizedDescription)")
+            return
+        }
+        let name = "capture-\(UUID().uuidString).m4a"
         let url = dir.appendingPathComponent(name)
 
         let settings: [String: Any] = [
@@ -36,14 +64,23 @@ final class CaptureMonitor: NSObject, ObservableObject {
             AVNumberOfChannelsKey: 1,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
         ]
-        guard let rec = try? AVAudioRecorder(url: url, settings: settings) else { return }
-        rec.prepareToRecord()
-        rec.record()
+        guard let rec = try? AVAudioRecorder(url: url, settings: settings),
+              rec.prepareToRecord(), rec.record() else {
+            try? fm.removeItem(at: url)
+            return
+        }
         recorder = rec
         duration = 0
         isRecording = true
         ticker = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.duration += 0.1 }
+            Task { @MainActor [weak self] in
+                guard let self, let recorder = self.recorder else { return }
+                guard recorder.isRecording else {
+                    self.stop()
+                    return
+                }
+                self.duration = recorder.currentTime
+            }
         }
     }
 
@@ -54,19 +91,18 @@ final class CaptureMonitor: NSObject, ObservableObject {
         isRecording = false
         let url = rec.url
         recorder = nil
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
         // Auto-add to shelf, then collapse so the confirmation flash is visible on the pill.
-        Task { @MainActor in
-            ShelfStore.shared.add(url)
-            PillState.shared?.onExpandRequest?(false)
-            PillState.shared?.flash(icon: "waveform", text: "Voice note saved")
-        }
+        ShelfStore.shared.add(url)
+        PillState.shared?.onExpandRequest?(false)
+        PillState.shared?.flash(icon: "waveform", text: "Voice note saved")
     }
 }
 
 // MARK: - View
 
 struct CaptureView: View {
-    @StateObject private var monitor = CaptureMonitor()
+    @StateObject private var monitor = CaptureMonitor.shared
 
     var body: some View {
         VStack(spacing: 14) {

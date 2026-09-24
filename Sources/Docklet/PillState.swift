@@ -104,9 +104,12 @@ class PillState: ObservableObject {
     // Which tabs appear in the navbar (ordered as Tab.allCases).
     @Published var enabledTabs: Set<String> {
         didSet {
+            let valid = Set(Tab.allCases.map(\.rawValue))
+            var normalized = enabledTabs.intersection(valid)
+            if normalized.isEmpty { normalized = [Tab.music.rawValue] }
+            if normalized != enabledTabs { enabledTabs = normalized }
             defaults.set(Array(enabledTabs), forKey: "enabledTabs")
-            // Never leave an invalid selection or an empty navbar.
-            if enabledTabs.isEmpty { enabledTabs = [Tab.music.rawValue]; return }
+            // Never leave an invalid selection.
             if !enabledTabs.contains(tab.rawValue), let first = visibleTabs.first {
                 withAnimation(.easeInOut(duration: 0.25)) { tab = first }
             }
@@ -130,8 +133,9 @@ class PillState: ObservableObject {
         idleContent    = IdleContent(rawValue: d.string(forKey: "idleContent") ?? "") ?? .weather
         let savedTab = Tab(rawValue: d.string(forKey: "defaultTab") ?? "") ?? .music
         defaultTab = savedTab
-        let saved = (d.array(forKey: "enabledTabs") as? [String]).map(Set.init)
-        enabledTabs = saved?.isEmpty == false ? saved! : Set(Tab.allCases.map(\.rawValue))
+        let validTabs = Set(Tab.allCases.map(\.rawValue))
+        let savedTabs = Set(d.stringArray(forKey: "enabledTabs") ?? []).intersection(validTabs)
+        enabledTabs = savedTabs.isEmpty ? validTabs : savedTabs
         tab = enabledTabs.contains(savedTab.rawValue) ? savedTab : (Tab.allCases.first { enabledTabs.contains($0.rawValue) } ?? .music)
         PillState.shared = self
     }
@@ -186,7 +190,7 @@ class PillState: ObservableObject {
 
     func setTab(_ t: Tab, enabled: Bool) {
         if enabled { enabledTabs.insert(t.rawValue) }
-        else if enabledTabs.count > 1 { enabledTabs.remove(t.rawValue) }
+        else if visibleTabs.count > 1 { enabledTabs.remove(t.rawValue) }
         // Keep the default-tab selection pointing at a visible tab.
         if !enabledTabs.contains(defaultTab.rawValue), let first = visibleTabs.first {
             defaultTab = first

@@ -13,12 +13,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel?.orderFront(nil)
         settings = SettingsWindowController(state: state)
         setupStatusItem()
-        WeatherMonitor.shared.refresh()
-
         if Onboarding.needsOnboarding {
+            // Populate the default weather pill via IP without showing a location
+            // permission alert before onboarding has explained why it is needed.
+            WeatherMonitor.shared.refresh(requestLocationPermission: false)
             onboarding = OnboardingWindowController()
             onboarding?.show()
+        } else {
+            WeatherMonitor.shared.refresh()
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        CaptureMonitor.shared.finishRecordingIfNeeded()
     }
 
     private func setupStatusItem() {
@@ -36,7 +43,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(settingsItem)
 
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
+        let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
         statusItem?.menu = menu
     }
 

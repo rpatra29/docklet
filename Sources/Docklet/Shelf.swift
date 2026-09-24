@@ -10,24 +10,56 @@ final class ShelfStore: ObservableObject {
     @Published var items: [URL] = []
 
     private static let key = "shelfItemPaths"
+    static var capturesDirectory: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.docklet.app", isDirectory: true)
+            .appendingPathComponent("Captures", isDirectory: true)
+    }
 
     init() {
         let paths = UserDefaults.standard.stringArray(forKey: Self.key) ?? []
+        var seen = Set<URL>()
         items = paths.compactMap { path -> URL? in
-            let url = URL(fileURLWithPath: path)
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            guard seen.insert(url).inserted else { return nil }
             return FileManager.default.fileExists(atPath: path) ? url : nil
         }
+        persist()
     }
 
     func add(_ url: URL) {
-        guard url.isFileURL, !items.contains(url) else { return }
+        let url = url.standardizedFileURL
+        guard url.isFileURL,
+              FileManager.default.fileExists(atPath: url.path),
+              !items.contains(url) else { return }
         items.append(url)
         persist()
         // Ambient, sound-free confirmation on the pill (shows when collapsed).
         PillState.shared?.flash(icon: "tray.and.arrow.down.fill", text: "Saved to Shelf")
     }
-    func remove(_ url: URL) { items.removeAll { $0 == url }; persist() }
-    func clear() { items.removeAll(); persist() }
+    func remove(_ url: URL) {
+        items.removeAll { $0 == url }
+        removeManagedCapture(url)
+        persist()
+    }
+
+    func clear() {
+        items.forEach(removeManagedCapture)
+        items.removeAll()
+        persist()
+    }
+
+    private func removeManagedCapture(_ url: URL) {
+        guard let captureDir = Self.capturesDirectory?.standardizedFileURL,
+              url.standardizedFileURL.deletingLastPathComponent() == captureDir else { return }
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch where (error as NSError).code != NSFileNoSuchFileError {
+            NSLog("Docklet: couldn't remove capture — \(error.localizedDescription)")
+        } catch {
+            // The file was already gone; removing its shelf reference still succeeded.
+        }
+    }
 
     private func persist() {
         UserDefaults.standard.set(items.map(\.path), forKey: Self.key)

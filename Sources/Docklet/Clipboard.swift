@@ -22,7 +22,7 @@ final class ClipboardMonitor: ObservableObject {
     /// Pinned items first (newest-first within each group), so pins stay at the top.
     var ordered: [ClipItem] { items.filter(\.pinned) + items.filter { !$0.pinned } }
 
-    private let maxItems = 20
+    private let maxUnpinnedItems = 20
     private var lastChangeCount: Int
     private var timer: Timer?
 
@@ -33,7 +33,7 @@ final class ClipboardMonitor: ObservableObject {
         }
     }
 
-    deinit { timer?.invalidate() }
+    deinit { MainActor.assumeIsolated { timer?.invalidate() } }
 
     private func check() {
         let pb = NSPasteboard.general
@@ -42,7 +42,11 @@ final class ClipboardMonitor: ObservableObject {
 
         if let text = pb.string(forType: .string),
            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if items.first?.text == text { return }   // deduplicate
+            if let existing = items.firstIndex(where: { $0.text == text }) {
+                // Re-copying an older entry makes it recent without losing its pin.
+                items.insert(items.remove(at: existing), at: 0)
+                return
+            }
             insert(ClipItem(text: text, image: nil, date: Date()))
         } else if let data = pb.data(forType: .tiff) ?? pb.data(forType: .png),
                   let img = NSImage(data: data) {
@@ -55,10 +59,11 @@ final class ClipboardMonitor: ObservableObject {
         trim()
     }
 
-    // Drop the oldest *unpinned* item once over the cap — pinned items never rotate out.
+    // Keep a full rolling history in addition to pins. Otherwise pinning 20 items
+    // would silently prevent every new clipboard item from being captured.
     private func trim() {
-        guard items.count > maxItems else { return }
-        if let idx = items.lastIndex(where: { !$0.pinned }) {
+        while items.lazy.filter({ !$0.pinned }).count > maxUnpinnedItems,
+              let idx = items.lastIndex(where: { !$0.pinned }) {
             items.remove(at: idx)
         }
     }
@@ -74,6 +79,7 @@ final class ClipboardMonitor: ObservableObject {
     func togglePin(id: UUID) {
         guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
         items[idx].pinned.toggle()
+        trim()
     }
 
     func remove(id: UUID) { items.removeAll { $0.id == id } }

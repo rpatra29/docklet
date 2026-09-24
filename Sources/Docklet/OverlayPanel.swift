@@ -11,6 +11,7 @@ let dropTypes: [NSPasteboard.PasteboardType] = [
 ]
 
 // Pulls file URLs out of a drag, tolerating both modern and legacy encodings.
+@MainActor
 func droppedFileURLs(_ sender: NSDraggingInfo) -> [URL] {
     let opts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
     if let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: opts) as? [URL],
@@ -90,6 +91,7 @@ class OverlayPanel: NSPanel {
     private var topInset:     CGFloat = 0   // notch / menu-bar height the content must clear
     private var globalMonitor: Any?
     private var isHovering = false
+    private weak var hostingView: FirstMouseHostingView<AnyView>?
 
     init(sharedState: PillState) {
         self.state = sharedState
@@ -137,6 +139,7 @@ class OverlayPanel: NSPanel {
 
         tracker.addSubview(hosting)
         contentView = tracker
+        hostingView = hosting
 
         // File drops: expand to the shelf on enter, accept files on drop. Wire both the
         // frontmost hosting view (the usual destination) and the tracker beneath it as a
@@ -166,12 +169,21 @@ class OverlayPanel: NSPanel {
         let nc = NSWorkspace.shared.notificationCenter
         nc.addObserver(self, selector: #selector(updateFullscreenVisibility),
                        name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screenParametersDidChange),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
         updateFullscreenVisibility()
     }
 
     deinit {
-        if let m = globalMonitor { NSEvent.removeMonitor(m) }
-        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        MainActor.assumeIsolated {
+            if let m = globalMonitor { NSEvent.removeMonitor(m) }
+            NSWorkspace.shared.notificationCenter.removeObserver(self)
+            NotificationCenter.default.removeObserver(self)
+        }
     }
 
     // A fullscreen window auto-hides the menu bar, collapsing the top inset to ~0.
@@ -231,6 +243,16 @@ class OverlayPanel: NSPanel {
         }
     }
 
+    @objc private func screenParametersDidChange() {
+        computeFrames()
+        hostingView?.rootView = AnyView(
+            NotchView(notchWidth: notchWidth, topInset: topInset).environmentObject(state)
+        )
+        let target = state.isExpanded ? expandedRect : (isHovering ? hoverRect : compactRect)
+        setFrame(target, display: true)
+        updateFullscreenVisibility()
+    }
+
     // Grow sideways + downward while keeping the top edge pinned to the bezel.
     private func inflatedCompact(_ rect: NSRect, dw: CGFloat, dh: CGFloat) -> NSRect {
         NSRect(x: rect.midX - (rect.width + dw) / 2,
@@ -259,7 +281,14 @@ class OverlayPanel: NSPanel {
     func toggleExpanded() { setExpanded(!state.isExpanded) }
 
     func setExpanded(_ expanded: Bool) {
+        let wasExpanded = state.isExpanded
+        if expanded && !wasExpanded {
+            state.tab = state.isTabEnabled(state.defaultTab)
+                ? state.defaultTab
+                : (state.visibleTabs.first ?? .music)
+        }
         state.isExpanded = expanded
+        if !expanded { state.isDragTargeted = false }
         // When collapsing while the cursor is still over the pill, settle into the
         // enlarged hover frame rather than snapping all the way down.
         let target = expanded ? expandedRect : (isHovering ? hoverRect : compactRect)

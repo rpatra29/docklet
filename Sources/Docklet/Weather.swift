@@ -39,6 +39,7 @@ final class WeatherMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
 
     private let lm = CLLocationManager()
     private var fallbackTask: Task<Void, Never>?
+    private var requestID = UUID()
 
     override init() {
         super.init()
@@ -46,31 +47,40 @@ final class WeatherMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         lm.desiredAccuracy = kCLLocationAccuracyKilometer
     }
 
-    func refresh() {
+    func refresh(requestLocationPermission: Bool = true) {
+        fallbackTask?.cancel()
+        requestID = UUID()
+        let id = requestID
         status = .loading
         switch lm.authorizationStatus {
         case .authorized, .authorizedAlways:
             lm.requestLocation()
-            scheduleIPFallback()
+            scheduleIPFallback(for: id)
         case .denied, .restricted:
-            Task { await fetchViaIP() }
+            Task { await fetchViaIP(for: id) }
         case .notDetermined:
-            lm.requestWhenInUseAuthorization()
-            scheduleIPFallback()
+            if requestLocationPermission {
+                lm.requestWhenInUseAuthorization()
+                scheduleIPFallback(for: id)
+            } else {
+                Task { await fetchViaIP(for: id) }
+            }
         @unknown default:
-            Task { await fetchViaIP() }
+            Task { await fetchViaIP(for: id) }
         }
     }
 
     // If CoreLocation never produces a fix (e.g. the auth prompt never resolves
     // for an unbundled binary), fall back to IP geolocation after a short wait
     // so the UI never spins on "Fetching weather…" forever.
-    private func scheduleIPFallback() {
+    private func scheduleIPFallback(for id: UUID) {
         fallbackTask?.cancel()
         fallbackTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard let self, !Task.isCancelled else { return }
-            if self.status == .loading { await self.fetchViaIP() }
+            if self.status == .loading, self.requestID == id {
+                await self.fetchViaIP(for: id)
+            }
         }
     }
 
@@ -79,11 +89,12 @@ final class WeatherMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            switch manager.authorizationStatus {
+            switch self.lm.authorizationStatus {
             case .authorized, .authorizedAlways:
                 self.lm.requestLocation()
             case .denied, .restricted:
-                await self.fetchViaIP()
+                let id = self.beginFallbackRequest()
+                await self.fetchViaIP(for: id)
             default:
                 break
             }
@@ -96,48 +107,71 @@ final class WeatherMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.fallbackTask?.cancel()   // real fix arrived — cancel the IP fallback
+            self.requestID = UUID()       // invalidate an IP request already in flight
+            let id = self.requestID
             // Reverse-geocode for a proper city name
             CLGeocoder().reverseGeocodeLocation(loc) { placemarks, _ in
-                if let city = placemarks?.first?.locality {
-                    Task { @MainActor in self.current.city = city }
+                guard let city = placemarks?.first?.locality else { return }
+                Task { @MainActor in
+                    guard self.requestID == id else { return }
+                    self.current.city = city
                 }
             }
             await self.fetchWeather(lat: loc.coordinate.latitude,
-                                    lon: loc.coordinate.longitude)
+                                    lon: loc.coordinate.longitude,
+                                    for: id)
         }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager,
                                      didFailWithError error: Error) {
-        Task { @MainActor [weak self] in await self?.fetchViaIP() }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let id = self.beginFallbackRequest()
+            await self.fetchViaIP(for: id)
+        }
     }
 
     // MARK: IP fallback
 
-    private func fetchViaIP() async {
+    private func beginFallbackRequest() -> UUID {
+        fallbackTask?.cancel()
+        requestID = UUID()
+        return requestID
+    }
+
+    private func fetchViaIP(for id: UUID) async {
+        guard requestID == id, !Task.isCancelled else { return }
         guard let url = URL(string: "https://freeipapi.com/api/json") else {
-            status = .error("Location unavailable"); return
+            if requestID == id { status = .error("Location unavailable") }
+            return
         }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard requestID == id, !Task.isCancelled else { return }
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                status = .error("Location service unavailable")
+                return
+            }
             if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                let lat = (json["latitude"]  as? NSNumber)?.doubleValue,
                let lon = (json["longitude"] as? NSNumber)?.doubleValue {
-                if current.city.isEmpty {
-                    current.city = json["cityName"] as? String ?? ""
-                }
-                await fetchWeather(lat: lat, lon: lon)
+                current.city = json["cityName"] as? String ?? ""
+                await fetchWeather(lat: lat, lon: lon, for: id)
             } else {
                 status = .error("Couldn't determine location")
             }
         } catch {
+            guard requestID == id, !Task.isCancelled else { return }
             status = .error(error.localizedDescription)
         }
     }
 
     // MARK: Fetch & parse (Open-Meteo)
 
-    private func fetchWeather(lat: Double, lon: Double) async {
+    private func fetchWeather(lat: Double, lon: Double, for id: UUID) async {
+        guard requestID == id, !Task.isCancelled else { return }
         var comps = URLComponents(string: "https://api.open-meteo.com/v1/forecast")!
         comps.queryItems = [
             .init(name: "latitude",  value: String(lat)),
@@ -150,46 +184,56 @@ final class WeatherMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         guard let url = comps.url else { status = .error("Bad URL"); return }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
+            guard requestID == id, !Task.isCancelled else { return }
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 status = .error("Weather service error (\(http.statusCode))"); return
             }
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 status = .error("Bad response"); return
             }
-            parse(json)
-            status = .loaded
+            guard parse(json) else {
+                status = .error("Incomplete weather response")
+                return
+            }
+            if requestID == id { status = .loaded }
         } catch {
+            guard requestID == id, !Task.isCancelled else { return }
             status = .error(error.localizedDescription)
         }
     }
 
-    private func parse(_ json: [String: Any]) {
-        if let cur = json["current"] as? [String: Any] {
-            current.tempC = Int(((cur["temperature_2m"] as? NSNumber)?.doubleValue ?? 0).rounded())
-            current.code  = (cur["weather_code"] as? NSNumber)?.intValue ?? 0
-            current.desc  = Self.desc(for: current.code)
-        }
+    @discardableResult
+    private func parse(_ json: [String: Any]) -> Bool {
+        guard let cur = json["current"] as? [String: Any],
+              let temperature = cur["temperature_2m"] as? NSNumber,
+              let weatherCode = cur["weather_code"] as? NSNumber,
+              let daily = json["daily"] as? [String: Any],
+              let times = daily["time"] as? [String],
+              let codes = daily["weather_code"] as? [NSNumber],
+              let maxs = daily["temperature_2m_max"] as? [NSNumber],
+              let mins = daily["temperature_2m_min"] as? [NSNumber] else { return false }
 
-        if let daily = json["daily"] as? [String: Any],
-           let times = daily["time"] as? [String],
-           let codes = daily["weather_code"]        as? [NSNumber],
-           let maxs  = daily["temperature_2m_max"]  as? [NSNumber],
-           let mins  = daily["temperature_2m_min"]  as? [NSNumber] {
-            let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
-            let dayFmt = DateFormatter(); dayFmt.dateFormat = "EEE"
-            let n = min(times.count, codes.count, maxs.count, mins.count)
-            forecast = (0..<n).map { idx in
-                let label: String
-                if idx == 0      { label = "Today" }
-                else if idx == 1 { label = "Tmrw" }
-                else if let date = df.date(from: times[idx]) { label = dayFmt.string(from: date) }
-                else             { label = "" }
-                return WeatherDay(label: label,
-                                  maxTemp: Int(maxs[idx].doubleValue.rounded()),
-                                  minTemp: Int(mins[idx].doubleValue.rounded()),
-                                  code: codes[idx].intValue)
-            }
+        let n = min(times.count, codes.count, maxs.count, mins.count)
+        guard n > 0 else { return false }
+
+        current.tempC = Int(temperature.doubleValue.rounded())
+        current.code = weatherCode.intValue
+        current.desc = Self.desc(for: current.code)
+
+        let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
+        let dayFmt = DateFormatter(); dayFmt.dateFormat = "EEE"
+        forecast = (0..<n).map { idx in
+            let label: String
+            if idx == 0      { label = "Today" }
+            else if idx == 1 { label = "Tmrw" }
+            else if let date = df.date(from: times[idx]) { label = dayFmt.string(from: date) }
+            else             { label = "" }
+            return WeatherDay(label: label,
+                              maxTemp: Int(maxs[idx].doubleValue.rounded()),
+                              minTemp: Int(mins[idx].doubleValue.rounded()),
+                              code: codes[idx].intValue)
         }
+        return true
     }
 
     // MARK: WMO code → SF Symbol / tint / description

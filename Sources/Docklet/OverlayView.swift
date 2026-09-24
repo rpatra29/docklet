@@ -42,28 +42,20 @@ struct IslandProgressShape: Shape {
     }
 }
 
-// MARK: - Shape type-erasure
-
-struct AnyShape: Shape {
-    private let _path: (CGRect) -> Path
-    init<S: Shape>(_ shape: S) { _path = { shape.path(in: $0) } }
-    func path(in rect: CGRect) -> Path { _path(rect) }
-}
-
 // One unified widget shape:
 //  • compact  → flat top (hugs the bezel / extends the notch), rounded bottom corners
 //  • expanded → fully rounded floating card
-func notchShape(isExpanded: Bool) -> AnyShape {
+func notchShape(isExpanded: Bool) -> UnevenRoundedRectangle {
     // Always flat on top (flush with the bezel / notch) and rounded only on the bottom,
     // so the widget grows straight down with nothing floating above it.
     let r: CGFloat = isExpanded ? 24 : 12
-    return AnyShape(UnevenRoundedRectangle(
+    return UnevenRoundedRectangle(
         topLeadingRadius:     0,
         bottomLeadingRadius:  r,
         bottomTrailingRadius: r,
         topTrailingRadius:    0,
         style: .continuous
-    ))
+    )
 }
 
 // MARK: - THE single notch widget
@@ -80,8 +72,6 @@ struct NotchView: View {
     let topInset: CGFloat
 
     @State private var isHovered = false
-    @State private var shuffleOn = false
-    @State private var favOn = false
     @State private var eq: [CGFloat] = [5, 9, 6, 10, 7]
     private let eqTimer = Timer.publish(every: 0.16, on: .main, in: .common).autoconnect()
 
@@ -92,7 +82,9 @@ struct NotchView: View {
     var tint: Color { np.tint }
     // Resolved accent — album artwork colour or the user's custom colour.
     var accent: Color { state.accent(albumTint: np.tint) }
-    var progressFraction: CGFloat { CGFloat(min(np.displayElapsed / max(np.track.duration, 1), 1)) }
+    var progressFraction: CGFloat {
+        CGFloat(min(max(np.displayElapsed / max(np.track.duration, 1), 0), 1))
+    }
 
     var body: some View {
         // Top-aligned so the widget grows DOWN from the top line, not out from its centre.
@@ -522,18 +514,14 @@ struct NotchView: View {
     }
 
     var controlsRow: some View {
-        HStack(spacing: 0) {
-            ctrlBtn("shuffle", 14, shuffleOn ? .green : .white.opacity(0.8)) { shuffleOn.toggle() }
-            Spacer()
+        HStack(spacing: 42) {
             ctrlBtn("backward.fill", 16, .white) { np.prev() }
-            Spacer()
             ctrlBtn(np.track.isPlaying ? "pause.fill" : "play.fill", 22, .white) { np.togglePlayPause() }
-            Spacer()
             ctrlBtn("forward.fill", 16, .white) { np.next() }
-            Spacer()
-            ctrlBtn(favOn ? "star.fill" : "star", 14, favOn ? .yellow : .white.opacity(0.8)) { favOn.toggle() }
         }
         .padding(.horizontal, 6)
+        .disabled(np.track.title.isEmpty)
+        .opacity(np.track.title.isEmpty ? 0.35 : 1)
     }
 
     func ctrlBtn(_ icon: String, _ sz: CGFloat, _ color: Color, _ a: @escaping () -> Void) -> some View {
@@ -542,5 +530,9 @@ struct NotchView: View {
         }.buttonStyle(.plain)
     }
 
-    func fmt(_ s: Double) -> String { let t = Int(max(0,s)); return String(format: "%d:%02d", t/60, t%60) }
+    func fmt(_ s: Double) -> String {
+        guard s.isFinite else { return "0:00" }
+        let t = Int(max(0, s))
+        return String(format: "%d:%02d", t / 60, t % 60)
+    }
 }

@@ -19,13 +19,24 @@ class SystemMonitor: ObservableObject {
     private var prevNumCPUInfo: mach_msg_type_number_t = 0
 
     // Network delta tracking
-    private var prevNetStats: (up: UInt64, down: UInt64) = (0, 0)
-    private var prevNetTime = Date()
+    private var prevNetStats: (up: UInt64, down: UInt64)?
+    private var prevNetTime: Date?
 
     init() {
         update()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.update() }
+        }
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            timer?.invalidate()
+            if let prevCPUInfo {
+                vm_deallocate(mach_task_self_,
+                              vm_address_t(UInt(bitPattern: prevCPUInfo)),
+                              vm_size_t(Int(prevNumCPUInfo) * MemoryLayout<integer_t>.stride))
+            }
         }
     }
 
@@ -52,18 +63,25 @@ class SystemMonitor: ObservableObject {
 
         var usedDelta = 0.0, totalDelta = 0.0
 
-        if let prev = prevCPUInfo {
+        if let prev = prevCPUInfo, prevNumCPUInfo == numInfo {
             for i in 0..<Int(numCPUs) {
                 let o = Int(CPU_STATE_MAX) * i
-                func cur(_ s: Int32) -> Double { Double(cpuInfo[o + Int(s)]) }
-                func prv(_ s: Int32) -> Double { Double(prev[o + Int(s)]) }
-                let dUser   = cur(CPU_STATE_USER)   - prv(CPU_STATE_USER)
-                let dSys    = cur(CPU_STATE_SYSTEM) - prv(CPU_STATE_SYSTEM)
-                let dIdle   = cur(CPU_STATE_IDLE)   - prv(CPU_STATE_IDLE)
-                let dNice   = cur(CPU_STATE_NICE)   - prv(CPU_STATE_NICE)
+                func delta(_ state: Int32) -> Double {
+                    let current = UInt32(bitPattern: cpuInfo[o + Int(state)])
+                    let previous = UInt32(bitPattern: prev[o + Int(state)])
+                    if current >= previous { return Double(current - previous) }
+                    return Double(UInt64(current) + UInt64(UInt32.max) - UInt64(previous) + 1)
+                }
+                let dUser   = delta(CPU_STATE_USER)
+                let dSys    = delta(CPU_STATE_SYSTEM)
+                let dIdle   = delta(CPU_STATE_IDLE)
+                let dNice   = delta(CPU_STATE_NICE)
                 usedDelta  += dUser + dSys + dNice
                 totalDelta += dUser + dSys + dIdle + dNice
             }
+        }
+
+        if let prev = prevCPUInfo {
             vm_deallocate(mach_task_self_,
                           vm_address_t(UInt(bitPattern: prev)),
                           vm_size_t(Int(prevNumCPUInfo) * MemoryLayout<integer_t>.stride))
@@ -88,7 +106,9 @@ class SystemMonitor: ObservableObject {
         }
         guard ok == KERN_SUCCESS else { return 0 }
 
-        let pg = UInt64(vm_page_size)
+        var pageSize: vm_size_t = 0
+        guard host_page_size(mach_host_self(), &pageSize) == KERN_SUCCESS else { return 0 }
+        let pg = UInt64(pageSize)
         let used = (UInt64(stats.active_count) + UInt64(stats.inactive_count)
                   + UInt64(stats.wire_count)) * pg
 
@@ -102,7 +122,7 @@ class SystemMonitor: ObservableObject {
 
     private func readBattery() -> (Double, Bool) {
         let snap = IOPSCopyPowerSourcesInfo().takeRetainedValue()
-        let list = IOPSCopyPowerSourcesList(snap).takeRetainedValue() as! [CFTypeRef]
+        let list = IOPSCopyPowerSourcesList(snap).takeRetainedValue() as [CFTypeRef]
         for src in list {
             guard let desc = IOPSGetPowerSourceDescription(snap, src)?
                     .takeUnretainedValue() as? [String: Any],
@@ -127,7 +147,9 @@ class SystemMonitor: ObservableObject {
         var totalUp: UInt64 = 0, totalDown: UInt64 = 0
         var ptr = 0
         while ptr + MemoryLayout<if_msghdr2>.size <= len {
-            let header = buf.withUnsafeBytes { $0.load(fromByteOffset: ptr, as: if_msghdr2.self) }
+            let header = buf.withUnsafeBytes {
+                $0.loadUnaligned(fromByteOffset: ptr, as: if_msghdr2.self)
+            }
             if header.ifm_type == RTM_IFINFO2 {
                 totalUp   += header.ifm_data.ifi_obytes
                 totalDown += header.ifm_data.ifi_ibytes
@@ -138,9 +160,14 @@ class SystemMonitor: ObservableObject {
         }
 
         let now = Date()
-        let dt = now.timeIntervalSince(prevNetTime)
-        let up   = dt > 0 ? Double(totalUp   > prevNetStats.up   ? totalUp   - prevNetStats.up   : 0) / dt : 0
-        let down = dt > 0 ? Double(totalDown > prevNetStats.down ? totalDown - prevNetStats.down : 0) / dt : 0
+        guard let previous = prevNetStats, let previousTime = prevNetTime else {
+            prevNetStats = (totalUp, totalDown)
+            prevNetTime = now
+            return (0, 0)
+        }
+        let dt = now.timeIntervalSince(previousTime)
+        let up   = dt > 0 ? Double(totalUp   >= previous.up   ? totalUp   - previous.up   : 0) / dt : 0
+        let down = dt > 0 ? Double(totalDown >= previous.down ? totalDown - previous.down : 0) / dt : 0
         prevNetStats = (totalUp, totalDown)
         prevNetTime  = now
         return (up, down)

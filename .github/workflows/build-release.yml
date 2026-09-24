@@ -1,0 +1,81 @@
+name: Build and release
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v[0-9]*"
+  workflow_dispatch:
+
+concurrency:
+  group: docklet-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  build:
+    name: Build macOS app
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Choose package version
+        id: package
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0-ci.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build and package
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: ./Scripts/package.sh "${{ steps.package.outputs.version }}"
+
+      - name: Upload packaged app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Docklet-macOS-${{ github.run_id }}
+          path: |
+            dist/Docklet-${{ steps.package.outputs.version }}-macOS.zip
+            dist/Docklet-${{ steps.package.outputs.version }}-macOS.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packaged app
+        uses: actions/download-artifact@v5
+        with:
+          name: Docklet-macOS-${{ github.run_id }}
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/Docklet-$version-macOS.zip" \
+            "dist/Docklet-$version-macOS.zip.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --title "Docklet $version"

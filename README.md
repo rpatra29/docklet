@@ -4,6 +4,7 @@ Docklet is a lightweight macOS notch widget that keeps useful tools close at han
 
 It includes music controls, a temporary file shelf, weather, quick voice notes,
 clipboard history, and system stats. It works on Macs with or without a notch.
+**Settings…** and **Replay Onboarding…** live on the menu-bar icon.
 
 ## Requirements
 

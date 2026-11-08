@@ -42,6 +42,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
+        let replayItem = NSMenuItem(title: "Replay Onboarding…", action: #selector(replayOnboarding), keyEquivalent: "")
+        replayItem.target = self
+        menu.addItem(replayItem)
+
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -50,6 +54,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openSettings() { settings?.show() }
+
+    @objc private func replayOnboarding() {
+        if onboarding == nil {
+            onboarding = OnboardingWindowController()
+        }
+        onboarding?.show()
+    }
 
     @objc private func quit() { NSApp.terminate(nil) }
 }

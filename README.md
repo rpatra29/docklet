@@ -9,7 +9,7 @@ clipboard history, and system stats. It works on Macs with or without a notch.
 ## Requirements
 
 - macOS 13 or later
-- Xcode command-line tools (for source builds)
+- Swift 5.9 or later and Xcode command-line tools (Xcode 15+; for source builds)
 
 ## Install
 
@@ -40,6 +40,8 @@ open dist/Docklet.app
 
 That script produces a universal (Apple silicon and Intel) `dist/Docklet.app`,
 ad-hoc signs it, and writes a zip plus a SHA-256 checksum beside it.
+`BUILD_NUMBER` (digits only, default `1`) is written to `CFBundleVersion`.
+`OUTPUT_DIR` (default `dist/` in the repo root) chooses where the app, zip, and checksum are written.
 
 ## Publish a release
 

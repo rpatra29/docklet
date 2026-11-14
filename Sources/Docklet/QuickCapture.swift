@@ -112,7 +112,7 @@ struct CaptureView: View {
                         .font(.system(size: 24)).foregroundColor(.white.opacity(0.4))
                     Text("Microphone access denied")
                         .font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
-                    Text("Enable in System Settings → Privacy → Microphone")
+                    Text("Enable in System Settings → Privacy & Security → Microphone")
                         .font(.system(size: 9)).foregroundColor(.white.opacity(0.3))
                         .multilineTextAlignment(.center)
                 }

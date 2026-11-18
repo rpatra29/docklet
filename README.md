@@ -17,6 +17,17 @@ Download the latest `Docklet-<version>-macOS.zip` from
 [Releases](https://github.com/rpatra29/docklet/releases), unzip it, and move
 `Docklet.app` to `/Applications`.
 
+To verify the download, save the matching `.zip.sha256` file from the release
+in the same directory as the zip. In Terminal, change to that directory and run
+(the filename must match the version you downloaded):
+
+```bash
+shasum -a 256 -c Docklet-1.0.0-macOS.zip.sha256
+```
+
+A successful check prints `OK`. The checksum checks download integrity; it does
+not verify the publisher's identity.
+
 Because Docklet is ad-hoc signed, macOS may block the first launch. Control-click
 the app and choose **Open**, or allow it from **System Settings → Privacy & Security**.
 

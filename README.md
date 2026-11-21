@@ -14,8 +14,7 @@ clipboard history, and system stats. It works on Macs with or without a notch.
 ## Install
 
 Download the latest `Docklet-<version>-macOS.zip` from
-[Releases](https://github.com/rpatra29/docklet/releases), unzip it, and move
-`Docklet.app` to `/Applications`.
+[Releases](https://github.com/rpatra29/docklet/releases).
 
 To verify the download, save the matching `.zip.sha256` file from the release
 in the same directory as the zip. In Terminal, change to that directory and run
@@ -27,6 +26,8 @@ shasum -a 256 -c Docklet-1.0.0-macOS.zip.sha256
 
 A successful check prints `OK`. The checksum checks download integrity; it does
 not verify the publisher's identity.
+
+After verifying the download, unzip it and move `Docklet.app` to `/Applications`.
 
 Because Docklet is ad-hoc signed, macOS may block the first launch. Control-click
 the app and choose **Open**, or allow it from **System Settings → Privacy & Security**.

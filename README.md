@@ -54,6 +54,9 @@ That script produces a universal (Apple silicon and Intel) `dist/Docklet.app`,
 ad-hoc signs it, and writes a zip plus a SHA-256 checksum beside it.
 `BUILD_NUMBER` (digits only, default `1`) is written to `CFBundleVersion`.
 `OUTPUT_DIR` (default `dist/` in the repo root) chooses where the app, zip, and checksum are written.
+Use an absolute path when setting `OUTPUT_DIR`: the script changes its working
+directory during the build. Packaging replaces `Docklet.app` and any zip and
+checksum for the selected version in that output directory.
 
 ## Publish a release
 
